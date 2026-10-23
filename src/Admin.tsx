@@ -1,6 +1,5 @@
-
 import { useCallback, useEffect, useState } from 'react'
-import type { FormEvent, ChangeEvent } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { supabase } from './supabase'
 
 const STORAGE_BUCKET = 'Jewellery_Images'
@@ -11,7 +10,7 @@ type Category = {
   name: string
 }
 
-type SavedItem = {
+type JewelleryItem = {
   id: string
   serial_number: number
   purity: string
@@ -38,80 +37,68 @@ type Visitor = {
   visit_count: number
 }
 
-function formatDate(date: string) {
-  return new Date(date).toLocaleString('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  })
-}
-
 export default function Admin() {
-  const [isAdmin, setIsAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
 
   const [categories, setCategories] = useState<Category[]>([])
-  const [loadingCategories, setLoadingCategories] = useState(false)
   const [newCategory, setNewCategory] = useState('')
-
-  // One category applies to every image in the current upload queue.
-  // The selection stays active for later batches until changed.
   const [selectedCategoryId, setSelectedCategoryId] = useState('')
+
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
+    null,
+  )
+  const [editingCategoryName, setEditingCategoryName] = useState('')
+  const [savingCategory, setSavingCategory] = useState(false)
+  const [deletingCategoryId, setDeletingCategoryId] = useState<string | null>(
+    null,
+  )
 
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([])
   const [uploading, setUploading] = useState(false)
 
-  const [savedItems, setSavedItems] = useState<SavedItem[]>([])
+  const [items, setItems] = useState<JewelleryItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null)
 
   const [visitors, setVisitors] = useState<Visitor[]>([])
   const [loadingVisitors, setLoadingVisitors] = useState(false)
 
   const loadCategories = useCallback(async () => {
-    setLoadingCategories(true)
+    const { data, error: loadError } = await supabase
+      .from('categories')
+      .select('id, name')
+      .order('name')
 
-    try {
-      const { data, error: categoryError } = await supabase
-        .from('categories')
-        .select('id, name')
-        .order('name')
-
-      if (categoryError) {
-        setError(`Could not load categories: ${categoryError.message}`)
-      } else {
-        setCategories(data ?? [])
-      }
-    } catch {
-      setError('Could not load categories.')
-    } finally {
-      setLoadingCategories(false)
+    if (loadError) {
+      setError(`Could not load categories: ${loadError.message}`)
+      return
     }
+
+    setCategories(data ?? [])
   }, [])
 
-  const loadSavedItems = useCallback(async () => {
+  const loadItems = useCallback(async () => {
     setLoadingItems(true)
 
     try {
-      const { data, error: itemsError } = await supabase
+      const { data, error: loadError } = await supabase
         .from('jewellery_items')
-        .select(
-          'id, serial_number, purity, metal, category_id, image_path',
-        )
+        .select('id, serial_number, purity, metal, category_id, image_path')
         .order('serial_number', { ascending: false })
 
-      if (itemsError) {
-        setError(`Could not load saved items: ${itemsError.message}`)
+      if (loadError) {
+        setError(`Could not load jewellery: ${loadError.message}`)
         return
       }
 
-      const rows = data ?? []
-
-      const itemsWithUrls: SavedItem[] = await Promise.all(
-        rows.map(async (item) => {
+      const loadedItems: JewelleryItem[] = await Promise.all(
+        (data ?? []).map(async (item) => {
           const { data: signedData, error: signedError } =
             await supabase.storage
               .from(STORAGE_BUCKET)
@@ -124,9 +111,9 @@ export default function Admin() {
         }),
       )
 
-      setSavedItems(itemsWithUrls)
+      setItems(loadedItems)
     } catch {
-      setError('Could not load saved jewellery items.')
+      setError('Could not load jewellery items.')
     } finally {
       setLoadingItems(false)
     }
@@ -136,17 +123,15 @@ export default function Admin() {
     setLoadingVisitors(true)
 
     try {
-      const { data, error: visitorsError } = await supabase
+      const { data, error: loadError } = await supabase
         .from('catalogue_visitors')
         .select(
           'id, name, phone_number, first_visited_at, last_visited_at, visit_count',
         )
         .order('last_visited_at', { ascending: false })
 
-      if (visitorsError) {
-        setError(
-          `Could not load visitor history: ${visitorsError.message}`,
-        )
+      if (loadError) {
+        setError(`Could not load visitor history: ${loadError.message}`)
         return
       }
 
@@ -158,13 +143,9 @@ export default function Admin() {
     }
   }, [])
 
-  const loadDashboardData = useCallback(async () => {
-    await Promise.all([
-      loadCategories(),
-      loadSavedItems(),
-      loadVisitors(),
-    ])
-  }, [loadCategories, loadSavedItems, loadVisitors])
+  const loadDashboard = useCallback(async () => {
+    await Promise.all([loadCategories(), loadItems(), loadVisitors()])
+  }, [loadCategories, loadItems, loadVisitors])
 
   useEffect(() => {
     let active = true
@@ -183,18 +164,14 @@ export default function Admin() {
 
         if (data.session?.user.id === ADMIN_USER_ID) {
           setIsAdmin(true)
-          await loadDashboardData()
+          await loadDashboard()
         } else if (data.session) {
           await supabase.auth.signOut()
         }
       } catch {
-        if (active) {
-          setError('Could not check your login session.')
-        }
+        if (active) setError('Could not check your login session.')
       } finally {
-        if (active) {
-          setLoading(false)
-        }
+        if (active) setLoading(false)
       }
     }
 
@@ -203,45 +180,33 @@ export default function Admin() {
     return () => {
       active = false
     }
-  }, [loadDashboardData])
+  }, [loadDashboard])
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
     setMessage('')
 
-    try {
-      const { data, error: loginError } =
-        await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
+    const { data, error: loginError } =
+      await supabase.auth.signInWithPassword({ email, password })
 
-      if (loginError) {
-        setError(loginError.message)
-        return
-      }
-
-      if (data.user?.id !== ADMIN_USER_ID) {
-        await supabase.auth.signOut()
-        setError(
-          'This account is not authorised to access the admin page.',
-        )
-        return
-      }
-
-      setIsAdmin(true)
-      setMessage('Login successful.')
-      await loadDashboardData()
-    } catch {
-      setError('Login failed. Please try again.')
+    if (loginError) {
+      setError(loginError.message)
+      return
     }
+
+    if (data.user?.id !== ADMIN_USER_ID) {
+      await supabase.auth.signOut()
+      setError('This account is not authorised to access the admin page.')
+      return
+    }
+
+    setIsAdmin(true)
+    setMessage('Login successful.')
+    await loadDashboard()
   }
 
   async function handleLogout() {
-    setError('')
-    setMessage('')
-
     const { error: logoutError } = await supabase.auth.signOut()
 
     if (logoutError) {
@@ -249,37 +214,206 @@ export default function Admin() {
       return
     }
 
-    setIsAdmin(false)
-
     uploadQueue.forEach((item) => URL.revokeObjectURL(item.previewUrl))
     setUploadQueue([])
-
-    setSavedItems([])
     setCategories([])
+    setItems([])
     setVisitors([])
     setSelectedCategoryId('')
+    setIsAdmin(false)
     setMessage('You have been logged out.')
+    setError('')
   }
 
-  function handleFileSelection(
-    event: ChangeEvent<HTMLInputElement>,
-  ) {
-    const files = Array.from(event.target.files ?? [])
-    event.target.value = ''
+  async function handleAddCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setError('')
+    setMessage('')
 
-    const imageFiles = files.filter((file) =>
-      file.type.startsWith('image/'),
-    )
+    const name = newCategory.trim()
 
-    if (imageFiles.length === 0) {
-      setError('Please select image files.')
+    if (!name) {
+      setError('Please enter a category name.')
       return
     }
 
-    if (!selectedCategoryId) {
-      setError(
-        'Please select a category before choosing jewellery images.',
+    const duplicate = categories.some(
+      (category) => category.name.toLowerCase() === name.toLowerCase(),
+    )
+
+    if (duplicate) {
+      setError('A category with this name already exists.')
+      return
+    }
+
+    const { data, error: insertError } = await supabase
+      .from('categories')
+      .insert({ name })
+      .select('id, name')
+      .single()
+
+    if (insertError) {
+      setError(`Could not add category: ${insertError.message}`)
+      return
+    }
+
+    setCategories((current) =>
+      [...current, data].sort((a, b) => a.name.localeCompare(b.name)),
+    )
+    setNewCategory('')
+    setMessage(`Category "${name}" added successfully.`)
+  }
+
+  function startEditingCategory(category: Category) {
+    setError('')
+    setMessage('')
+    setEditingCategoryId(category.id)
+    setEditingCategoryName(category.name)
+  }
+
+  function cancelEditingCategory() {
+    setEditingCategoryId(null)
+    setEditingCategoryName('')
+  }
+
+  async function handleUpdateCategory(
+    event: FormEvent<HTMLFormElement>,
+    categoryId: string,
+  ) {
+    event.preventDefault()
+
+    const name = editingCategoryName.trim()
+
+    if (!name) {
+      setError('Please enter a category name.')
+      return
+    }
+
+    const duplicate = categories.some(
+      (category) =>
+        category.id !== categoryId &&
+        category.name.toLowerCase() === name.toLowerCase(),
+    )
+
+    if (duplicate) {
+      setError('Another category already uses this name.')
+      return
+    }
+
+    setSavingCategory(true)
+    setError('')
+    setMessage('')
+
+    try {
+      const { data, error: updateError } = await supabase
+        .from('categories')
+        .update({ name })
+        .eq('id', categoryId)
+        .select('id, name')
+        .single()
+
+      if (updateError) {
+        setError(`Could not rename category: ${updateError.message}`)
+        return
+      }
+
+      setCategories((current) =>
+        current
+          .map((category) => (category.id === categoryId ? data : category))
+          .sort((a, b) => a.name.localeCompare(b.name)),
       )
+
+      cancelEditingCategory()
+      setMessage(
+        `Category renamed to "${data.name}". Its jewellery items remain linked.`,
+      )
+    } catch {
+      setError('An unexpected error occurred while renaming the category.')
+    } finally {
+      setSavingCategory(false)
+    }
+  }
+
+  async function handleDeleteCategory(category: Category) {
+    if (uploadQueue.length > 0 && selectedCategoryId === category.id) {
+      setError(
+        'This category is selected for queued uploads. Upload or clear the queue first.',
+      )
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Delete the category "${category.name}"?\n\nYou can only delete a category that contains no jewellery items.`,
+    )
+
+    if (!confirmed) return
+
+    setDeletingCategoryId(category.id)
+    setError('')
+    setMessage('')
+
+    try {
+      const { data: linkedItems, error: checkError } = await supabase
+        .from('jewellery_items')
+        .select('id')
+        .eq('category_id', category.id)
+        .limit(1)
+
+      if (checkError) {
+        setError(`Could not check category items: ${checkError.message}`)
+        return
+      }
+
+      if (linkedItems && linkedItems.length > 0) {
+        setError(
+          `Cannot delete "${category.name}" because it contains jewellery items. Rename the category instead, or move/delete its items first.`,
+        )
+        return
+      }
+
+      const { error: deleteError } = await supabase
+        .from('categories')
+        .delete()
+        .eq('id', category.id)
+
+      if (deleteError) {
+        setError(`Could not delete category: ${deleteError.message}`)
+        return
+      }
+
+      setCategories((current) =>
+        current.filter((entry) => entry.id !== category.id),
+      )
+
+      if (selectedCategoryId === category.id) {
+        setSelectedCategoryId('')
+      }
+
+      if (editingCategoryId === category.id) {
+        cancelEditingCategory()
+      }
+
+      setMessage(`Category "${category.name}" deleted successfully.`)
+    } catch {
+      setError('An unexpected error occurred while deleting the category.')
+    } finally {
+      setDeletingCategoryId(null)
+    }
+  }
+
+  function handleFileSelection(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+
+    if (!selectedCategoryId) {
+      setError('Please select a category before choosing images.')
+      return
+    }
+
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+
+    if (imageFiles.length === 0) {
+      setError('Please select valid image files.')
       return
     }
 
@@ -325,63 +459,19 @@ export default function Admin() {
     setMessage('')
   }
 
-  async function handleAddCategory(
-    event: FormEvent<HTMLFormElement>,
-  ) {
-    event.preventDefault()
-    setError('')
-    setMessage('')
-
-    const name = newCategory.trim()
-
-    if (!name) {
-      setError('Enter a category name.')
-      return
-    }
-
-    const { data, error: categoryError } = await supabase
-      .from('categories')
-      .insert({ name })
-      .select('id, name')
-      .single()
-
-    if (categoryError) {
-      setError(`Could not add category: ${categoryError.message}`)
-      return
-    }
-
-    setCategories((current) =>
-      [...current, data].sort((a, b) =>
-        a.name.localeCompare(b.name),
-      ),
-    )
-
-    setNewCategory('')
-    setMessage(`Category "${name}" added successfully.`)
-  }
-
   async function handleUploadAll() {
     if (uploadQueue.length === 0) {
-      setError('Please select at least one image to upload.')
-      return
-    }
-
-    if (!selectedCategoryId) {
-      setError('Please select a category for this batch.')
+      setError('Please select at least one image.')
       return
     }
 
     if (!categories.some((category) => category.id === selectedCategoryId)) {
-      setError('The selected category is no longer available. Select another.')
+      setError('Please select a valid category.')
       return
     }
 
-    const incomplete = uploadQueue.some(
-      (item) => !item.purity.trim(),
-    )
-
-    if (incomplete) {
-      setError('Enter the purity for every image before uploading.')
+    if (uploadQueue.some((item) => !item.purity.trim())) {
+      setError('Please enter the purity for every image.')
       return
     }
 
@@ -389,22 +479,13 @@ export default function Admin() {
     setError('')
     setMessage('')
 
-    let uploadedCount = 0
     const failedItems: UploadItem[] = []
-
-    const categoryName =
-      categories.find((category) => category.id === selectedCategoryId)
-        ?.name ?? 'selected category'
+    let uploadedCount = 0
 
     try {
       for (const item of uploadQueue) {
-        const safeFilename = item.file.name.replace(
-          /[^a-zA-Z0-9._-]/g,
-          '_',
-        )
-
-        const imagePath =
-          `catalogue/${crypto.randomUUID()}-${safeFilename}`
+        const safeFilename = item.file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const imagePath = `catalogue/${crypto.randomUUID()}-${safeFilename}`
 
         const { error: storageError } = await supabase.storage
           .from(STORAGE_BUCKET)
@@ -416,11 +497,7 @@ export default function Admin() {
 
         if (storageError) {
           failedItems.push(item)
-          setError(
-            (current) =>
-              current ||
-              `Could not upload ${item.file.name}: ${storageError.message}`,
-          )
+          setError((current) => current || storageError.message)
           continue
         }
 
@@ -434,16 +511,9 @@ export default function Admin() {
           })
 
         if (insertError) {
-          await supabase.storage
-            .from(STORAGE_BUCKET)
-            .remove([imagePath])
-
+          await supabase.storage.from(STORAGE_BUCKET).remove([imagePath])
           failedItems.push(item)
-          setError(
-            (current) =>
-              current ||
-              `Could not save ${item.file.name}: ${insertError.message}`,
-          )
+          setError((current) => current || insertError.message)
           continue
         }
 
@@ -454,15 +524,17 @@ export default function Admin() {
       setUploadQueue(failedItems)
 
       if (uploadedCount > 0) {
+        const categoryName =
+          categories.find((category) => category.id === selectedCategoryId)
+            ?.name ?? 'selected category'
+
         setMessage(
-          `${uploadedCount} image(s) uploaded to "${categoryName}" successfully. Serial numbers were generated automatically.`,
+          `${uploadedCount} image(s) uploaded to "${categoryName}" successfully.`,
         )
-        await loadSavedItems()
+        await loadItems()
       }
 
-      if (failedItems.length === 0 && uploadedCount > 0) {
-        setError('')
-      }
+      if (failedItems.length === 0) setError('')
     } catch {
       setError('An unexpected error occurred during upload.')
     } finally {
@@ -470,14 +542,14 @@ export default function Admin() {
     }
   }
 
-  async function handleDelete(item: SavedItem) {
+  async function handleDeleteItem(item: JewelleryItem) {
     const confirmed = window.confirm(
-      `Delete jewellery item #${item.serial_number}?\n\nThis removes the catalogue record. This action cannot be undone.`,
+      `Delete jewellery item #${item.serial_number}? This action cannot be undone.`,
     )
 
     if (!confirmed) return
 
-    setDeletingId(item.id)
+    setDeletingItemId(item.id)
     setError('')
     setMessage('')
 
@@ -492,85 +564,72 @@ export default function Admin() {
         return
       }
 
-      setSavedItems((current) =>
-        current.filter((savedItem) => savedItem.id !== item.id),
-      )
+      setItems((current) => current.filter((entry) => entry.id !== item.id))
 
       const { error: storageError } = await supabase.storage
         .from(STORAGE_BUCKET)
         .remove([item.image_path])
 
-      if (storageError) {
-        setMessage(
-          `Item #${item.serial_number} was removed from the catalogue, but its image could not be deleted from Storage. You may need to remove that file manually.`,
-        )
-      } else {
-        setMessage(`Jewellery item #${item.serial_number} deleted.`)
-      }
+      setMessage(
+        storageError
+          ? `Item #${item.serial_number} was removed, but its stored image could not be deleted.`
+          : `Jewellery item #${item.serial_number} deleted successfully.`,
+      )
     } catch {
       setError('An unexpected error occurred while deleting the item.')
     } finally {
-      setDeletingId(null)
+      setDeletingItemId(null)
     }
   }
 
-  function getCategoryName(categoryId: string) {
+  function categoryName(categoryId: string) {
     return (
-      categories.find((category) => category.id === categoryId)
-        ?.name ?? 'Unknown category'
+      categories.find((category) => category.id === categoryId)?.name ??
+      'Unknown category'
     )
+  }
+
+  function formatDate(date: string) {
+    return new Date(date).toLocaleString('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    })
   }
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-[#090909] p-8 text-center text-amber-100">
-        Checking admin access...
+      <main className="flex min-h-screen items-center justify-center bg-[#0d0d0d] text-amber-400">
+        Checking admin session...
       </main>
     )
   }
 
   if (!isAdmin) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#090909] px-4 py-10 text-amber-100">
+      <main className="flex min-h-screen items-center justify-center bg-[#0d0d0d] px-4 py-12 text-white">
         <form
-          onSubmit={handleLogin}
-          className="w-full max-w-md space-y-5 rounded-2xl border border-amber-700/40 bg-[#151515] p-8 shadow-xl"
+          onSubmit={(event) => void handleLogin(event)}
+          className="w-full max-w-md space-y-6 rounded-2xl border border-amber-800/40 bg-[#151515] p-8"
         >
-          <p className="text-sm uppercase tracking-[0.3em] text-amber-500">
-            Aruna Jewellery
-          </p>
-
-          <h1 className="text-3xl font-semibold">Owner Login</h1>
-
-          <p className="text-sm text-gray-400">
-            Sign in with your authorised Supabase admin account.
-          </p>
-
-          {error && (
-            <p
-              role="alert"
-              className="rounded-lg border border-red-800 bg-red-950/40 p-3 text-sm text-red-300"
-            >
-              {error}
+          <div>
+            <p className="text-sm uppercase tracking-[0.3em] text-amber-400">
+              Aruna Jewellery
             </p>
-          )}
-
-          {message && (
-            <p className="rounded-lg border border-green-800 bg-green-950/30 p-3 text-sm text-green-300">
-              {message}
+            <h1 className="mt-3 text-3xl font-semibold">Admin Login</h1>
+            <p className="mt-2 text-sm text-gray-400">
+              Sign in with the authorised owner account.
             </p>
-          )}
+          </div>
 
           <label className="block space-y-2">
             <span className="text-sm text-gray-300">Email</span>
             <input
               type="email"
+              required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              autoComplete="username"
-              required
               className="w-full rounded-lg border border-gray-700 bg-black px-4 py-3 outline-none focus:border-amber-500"
-              placeholder="Admin email"
+              placeholder="Owner email"
             />
           </label>
 
@@ -578,83 +637,85 @@ export default function Admin() {
             <span className="text-sm text-gray-300">Password</span>
             <input
               type="password"
+              required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              required
               className="w-full rounded-lg border border-gray-700 bg-black px-4 py-3 outline-none focus:border-amber-500"
               placeholder="Password"
             />
           </label>
 
+          {error && (
+            <p className="rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">
+              {error}
+            </p>
+          )}
+
           <button
             type="submit"
-            className="w-full rounded-lg bg-amber-500 px-4 py-3 font-semibold text-black transition hover:bg-amber-400"
+            className="w-full rounded-lg bg-amber-500 px-5 py-3 font-semibold text-black hover:bg-amber-400"
           >
             Sign in
           </button>
-
-          <a
-            href="/"
-            className="block text-center text-sm text-gray-400 hover:text-amber-400"
-          >
-            Return to catalogue
-          </a>
         </form>
       </main>
     )
   }
 
   return (
-    <main className="min-h-screen bg-[#090909] px-4 py-8 text-amber-100 sm:px-8">
-      <div className="mx-auto max-w-7xl space-y-10">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-amber-800/40 pb-6">
+    <main className="min-h-screen bg-[#0d0d0d] px-4 py-8 text-white sm:px-8">
+      <div className="mx-auto max-w-7xl space-y-8">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-amber-800/30 pb-6">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-amber-500">
-              Aruna Jewellery · Owner Dashboard
+            <p className="text-sm uppercase tracking-[0.3em] text-amber-400">
+              Aruna Jewellery
             </p>
-            <h1 className="mt-2 text-3xl font-semibold">
-              Jewellery Management
+            <h1 className="mt-2 text-3xl font-semibold sm:text-4xl">
+              Admin Dashboard
             </h1>
             <p className="mt-2 text-sm text-gray-400">
-              Upload, organise and delete catalogue images.
+              Manage categories, catalogue images, and visitors.
             </p>
           </div>
 
-          <div className="flex gap-3">
-            <a
-              href="/"
-              className="rounded-lg border border-gray-700 px-4 py-2 text-sm hover:border-amber-500"
-            >
-              View catalogue
-            </a>
-
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 hover:bg-red-950/40"
-            >
-              Log out
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => void handleLogout()}
+            className="rounded-lg border border-gray-700 px-4 py-2 hover:border-amber-500"
+          >
+            Log out
+          </button>
         </header>
 
-        {(error || message) && (
-          <div className="space-y-2">
-            {error && (
-              <p
-                role="alert"
-                className="rounded-lg border border-red-800 bg-red-950/40 p-4 text-sm text-red-300"
-              >
-                {error}
-              </p>
-            )}
+        {error && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-900 bg-red-950/40 p-4 text-red-300"
+          >
+            {error}
+            <button
+              type="button"
+              onClick={() => setError('')}
+              className="ml-3 underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
-            {message && (
-              <p className="rounded-lg border border-green-800 bg-green-950/30 p-4 text-sm text-green-300">
-                {message}
-              </p>
-            )}
+        {message && (
+          <div
+            role="status"
+            className="rounded-lg border border-amber-800/40 bg-amber-950/20 p-4 text-amber-200"
+          >
+            {message}
+            <button
+              type="button"
+              onClick={() => setMessage('')}
+              className="ml-3 underline"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -663,22 +724,21 @@ export default function Admin() {
           <div>
             <h2 className="text-2xl font-semibold">1. Manage categories</h2>
             <p className="mt-2 text-sm text-gray-400">
-              Create categories before uploading jewellery images.
+              Add a category, correct its name, or delete an empty category.
             </p>
           </div>
 
           <form
-            onSubmit={handleAddCategory}
+            onSubmit={(event) => void handleAddCategory(event)}
             className="flex flex-col gap-3 sm:flex-row"
           >
             <input
               value={newCategory}
               onChange={(event) => setNewCategory(event.target.value)}
+              placeholder="New category name"
               required
-              placeholder="Example: Gold Chains"
               className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-black px-4 py-3 outline-none focus:border-amber-500"
             />
-
             <button
               type="submit"
               className="rounded-lg bg-amber-500 px-5 py-3 font-semibold text-black hover:bg-amber-400"
@@ -687,80 +747,119 @@ export default function Admin() {
             </button>
           </form>
 
-          {loadingCategories ? (
-            <p className="text-sm text-gray-400">Loading categories...</p>
-          ) : categories.length === 0 ? (
-            <p className="text-sm text-gray-400">
-              No categories yet. Add your first category above.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {categories.map((category) => (
-                <span
+          <div className="space-y-3">
+            {categories.length === 0 ? (
+              <p className="text-gray-400">No categories found.</p>
+            ) : (
+              categories.map((category) => (
+                <div
                   key={category.id}
-                  className="rounded-full border border-amber-700/40 bg-amber-950/20 px-3 py-2 text-sm"
+                  className="flex flex-col gap-3 rounded-xl border border-gray-800 bg-black/30 p-4 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  {category.name}
-                </span>
-              ))}
-            </div>
-          )}
+                  {editingCategoryId === category.id ? (
+                    <form
+                      onSubmit={(event) =>
+                        void handleUpdateCategory(event, category.id)
+                      }
+                      className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row"
+                    >
+                      <input
+                        value={editingCategoryName}
+                        onChange={(event) =>
+                          setEditingCategoryName(event.target.value)
+                        }
+                        required
+                        autoFocus
+                        className="min-w-0 flex-1 rounded-lg border border-amber-700 bg-black px-3 py-2 outline-none focus:border-amber-400"
+                      />
+                      <button
+                        type="submit"
+                        disabled={savingCategory}
+                        className="rounded-lg bg-amber-500 px-4 py-2 font-medium text-black disabled:opacity-50"
+                      >
+                        {savingCategory ? 'Saving...' : 'Save name'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingCategory}
+                        onClick={cancelEditingCategory}
+                        className="rounded-lg border border-gray-700 px-4 py-2 disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <>
+                      <div className="min-w-0">
+                        <p className="break-words font-medium">
+                          {category.name}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Category ID: {category.id}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditingCategory(category)}
+                          className="rounded-lg border border-amber-700/60 px-4 py-2 text-sm text-amber-300 hover:bg-amber-950/30"
+                        >
+                          Edit name
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteCategory(category)}
+                          disabled={deletingCategoryId === category.id}
+                          className="rounded-lg border border-red-900 px-4 py-2 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                        >
+                          {deletingCategoryId === category.id
+                            ? 'Deleting...'
+                            : 'Delete'}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
         </section>
 
-        {/* 2. Upload jewellery */}
+        {/* 2. Bulk upload */}
         <section className="space-y-5 rounded-2xl border border-amber-800/30 bg-[#121212] p-5 sm:p-7">
           <div>
-            <h2 className="text-2xl font-semibold">2. Upload jewellery</h2>
+            <h2 className="text-2xl font-semibold">2. Bulk upload images</h2>
             <p className="mt-2 text-sm text-gray-400">
-              Choose one category for the entire batch, then select as many
-              images as you need. Every image in the batch will use that
-              category automatically.
+              Choose a category, select multiple images, check purity, and upload.
             </p>
           </div>
 
-          <div className="rounded-xl border border-amber-700/30 bg-black/30 p-4 sm:p-5">
-            <label className="block space-y-2">
-              <span className="font-medium text-amber-300">
-                Category for this batch
-              </span>
-              <select
-                value={selectedCategoryId}
-                onChange={(event) => {
-                  setSelectedCategoryId(event.target.value)
-                  setError('')
-                  setMessage('')
-                }}
-                disabled={uploading}
-                className="w-full rounded-lg border border-amber-700/40 bg-[#151515] px-4 py-3 outline-none focus:border-amber-500 disabled:opacity-50"
-              >
-                <option value="">Select category for all images</option>
-                {categories.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.name}
-                  </option>
-                ))}
-              </select>
-              <span className="block text-xs text-gray-400">
-                {selectedCategoryId
-                  ? `Selected: ${getCategoryName(selectedCategoryId)}. All queued images will be saved to this category. You can change it before uploading.`
-                  : 'Choose a category before selecting images.'}
-              </span>
-            </label>
-          </div>
+          <label className="block space-y-2">
+            <span className="text-sm text-gray-300">Upload category</span>
+            <select
+              value={selectedCategoryId}
+              onChange={(event) => setSelectedCategoryId(event.target.value)}
+              disabled={uploading}
+              className="w-full rounded-lg border border-gray-700 bg-black px-4 py-3 outline-none focus:border-amber-500 disabled:opacity-50"
+            >
+              <option value="">Select a category</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
           <label
-            className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
-              selectedCategoryId && !uploading
-                ? 'cursor-pointer border-amber-800/50 bg-black/40 hover:border-amber-500'
-                : 'cursor-not-allowed border-gray-800 bg-black/20 opacity-60'
+            className={`inline-flex cursor-pointer items-center justify-center rounded-lg border border-amber-700/60 px-5 py-3 font-medium text-amber-300 hover:bg-amber-950/30 ${
+              !selectedCategoryId || uploading
+                ? 'cursor-not-allowed opacity-50'
+                : ''
             }`}
           >
-            <span className="text-lg font-medium">
-              Choose jewellery images
-            </span>
-            <span className="mt-2 text-sm text-gray-400">
-              Select multiple files for the selected category
-            </span>
+            Choose images
             <input
               type="file"
               accept="image/*"
@@ -771,37 +870,19 @@ export default function Admin() {
             />
           </label>
 
-          {!selectedCategoryId && categories.length > 0 && (
-            <p className="text-sm text-amber-300">
-              Select a category above to enable image selection.
-            </p>
-          )}
-
-          {categories.length === 0 && (
-            <p className="text-sm text-amber-300">
-              Add at least one category before uploading.
-            </p>
-          )}
-
           {uploadQueue.length > 0 && (
             <>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm text-gray-300">
-                    {uploadQueue.length} image(s) waiting to upload
-                  </p>
-                  <p className="mt-1 text-sm text-amber-400">
-                    Batch category: {getCategoryName(selectedCategoryId)}
-                  </p>
-                </div>
-
+                <p className="font-medium">
+                  {uploadQueue.length} image(s) in queue
+                </p>
                 <button
                   type="button"
                   onClick={clearUploadQueue}
                   disabled={uploading}
-                  className="text-sm text-red-300 hover:text-red-200 disabled:opacity-50"
+                  className="rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 disabled:opacity-50"
                 >
-                  Clear all
+                  Clear queue
                 </button>
               </div>
 
@@ -809,7 +890,7 @@ export default function Admin() {
                 {uploadQueue.map((item) => (
                   <article
                     key={item.id}
-                    className="overflow-hidden rounded-xl border border-gray-800 bg-black/40"
+                    className="overflow-hidden rounded-xl border border-gray-800 bg-black/30"
                   >
                     <img
                       src={item.previewUrl}
@@ -818,18 +899,9 @@ export default function Admin() {
                     />
 
                     <div className="space-y-4 p-4">
-                      <p className="truncate text-sm text-gray-300">
+                      <p className="break-words text-sm text-gray-300">
                         {item.file.name}
                       </p>
-
-                      <div className="rounded-lg border border-amber-800/30 bg-amber-950/20 px-3 py-2">
-                        <p className="text-xs text-gray-400">
-                          Category assigned to this batch
-                        </p>
-                        <p className="mt-1 text-sm font-medium text-amber-300">
-                          {getCategoryName(selectedCategoryId)}
-                        </p>
-                      </div>
 
                       <label className="block space-y-2">
                         <span className="text-sm text-gray-400">Metal</span>
@@ -840,12 +912,13 @@ export default function Admin() {
                             const metal = event.target.value as
                               | 'Gold'
                               | 'Silver'
+
                             updateQueueItem(item.id, {
                               metal,
                               purity: metal === 'Gold' ? '22K' : '',
                             })
                           }}
-                          className="w-full rounded-lg border border-gray-700 bg-[#151515] px-3 py-2 disabled:opacity-50"
+                          className="w-full rounded-lg border border-gray-700 bg-[#151515] px-3 py-2"
                         >
                           <option value="Gold">Gold</option>
                           <option value="Silver">Silver</option>
@@ -863,12 +936,8 @@ export default function Admin() {
                             })
                           }
                           required
-                          placeholder={
-                            item.metal === 'Gold'
-                              ? 'Example: 22K'
-                              : 'Enter silver purity'
-                          }
-                          className="w-full rounded-lg border border-gray-700 bg-[#151515] px-3 py-2 disabled:opacity-50"
+                          placeholder="Example: 22K"
+                          className="w-full rounded-lg border border-gray-700 bg-[#151515] px-3 py-2"
                         />
                       </label>
 
@@ -876,7 +945,7 @@ export default function Admin() {
                         type="button"
                         disabled={uploading}
                         onClick={() => removeFromQueue(item.id)}
-                        className="w-full rounded-lg border border-red-900 px-3 py-2 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                        className="w-full rounded-lg border border-red-900 px-3 py-2 text-sm text-red-300 disabled:opacity-50"
                       >
                         Remove from queue
                       </button>
@@ -888,10 +957,12 @@ export default function Admin() {
               <button
                 type="button"
                 onClick={() => void handleUploadAll()}
-                disabled={uploading || !selectedCategoryId || categories.length === 0}
+                disabled={uploading || !selectedCategoryId}
                 className="w-full rounded-lg bg-amber-500 px-5 py-3 font-semibold text-black hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
               >
-                {uploading ? 'Uploading images...' : `Upload all ${uploadQueue.length} image(s)`}
+                {uploading
+                  ? 'Uploading images...'
+                  : `Upload all ${uploadQueue.length} image(s)`}
               </button>
             </>
           )}
@@ -903,29 +974,27 @@ export default function Admin() {
             <div>
               <h2 className="text-2xl font-semibold">3. Manage jewellery</h2>
               <p className="mt-2 text-sm text-gray-400">
-                Delete items from the catalogue using the button on each card.
+                View uploaded items and delete unwanted catalogue entries.
               </p>
             </div>
 
             <button
               type="button"
-              onClick={() => void loadSavedItems()}
+              onClick={() => void loadItems()}
               disabled={loadingItems}
-              className="rounded-lg border border-amber-700/50 px-4 py-2 text-sm hover:border-amber-500 disabled:opacity-50"
+              className="rounded-lg border border-amber-700/50 px-4 py-2 text-sm disabled:opacity-50"
             >
               {loadingItems ? 'Refreshing...' : 'Refresh'}
             </button>
           </div>
 
           {loadingItems ? (
-            <p className="text-gray-400">Loading saved jewellery...</p>
-          ) : savedItems.length === 0 ? (
-            <p className="text-gray-400">
-              No jewellery items have been saved yet.
-            </p>
+            <p className="text-gray-400">Loading jewellery...</p>
+          ) : items.length === 0 ? (
+            <p className="text-gray-400">No jewellery items found.</p>
           ) : (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {savedItems.map((item) => (
+              {items.map((item) => (
                 <article
                   key={item.id}
                   className="overflow-hidden rounded-xl border border-gray-800 bg-black/40"
@@ -949,20 +1018,18 @@ export default function Admin() {
                     <p className="text-sm text-gray-300">
                       Purity: {item.purity}
                     </p>
-                    <p className="text-sm text-gray-300">
-                      Metal: {item.metal}
-                    </p>
+                    <p className="text-sm text-gray-300">Metal: {item.metal}</p>
                     <p className="text-sm text-gray-400">
-                      Category: {getCategoryName(item.category_id)}
+                      Category: {categoryName(item.category_id)}
                     </p>
 
                     <button
                       type="button"
-                      onClick={() => void handleDelete(item)}
-                      disabled={deletingId === item.id}
-                      className="mt-3 w-full rounded-lg border border-red-800 bg-red-950/30 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-950/70 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => void handleDeleteItem(item)}
+                      disabled={deletingItemId === item.id}
+                      className="mt-3 w-full rounded-lg border border-red-800 px-4 py-2 text-sm text-red-300 disabled:opacity-50"
                     >
-                      {deletingId === item.id
+                      {deletingItemId === item.id
                         ? 'Deleting...'
                         : 'Delete jewellery'}
                     </button>
@@ -977,9 +1044,9 @@ export default function Admin() {
         <section className="space-y-5 rounded-2xl border border-amber-800/30 bg-[#121212] p-5 sm:p-7">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-semibold">4. Visitor History</h2>
+              <h2 className="text-2xl font-semibold">4. Visitor history</h2>
               <p className="mt-2 text-sm text-gray-400">
-                Visitors who registered to view your catalogue.
+                View visitors recorded by your catalogue.
               </p>
             </div>
 
@@ -987,7 +1054,7 @@ export default function Admin() {
               type="button"
               onClick={() => void loadVisitors()}
               disabled={loadingVisitors}
-              className="rounded-lg border border-amber-700/50 px-4 py-2 text-sm hover:border-amber-500 disabled:opacity-50"
+              className="rounded-lg border border-amber-700/50 px-4 py-2 text-sm disabled:opacity-50"
             >
               {loadingVisitors ? 'Refreshing...' : 'Refresh history'}
             </button>
@@ -1023,8 +1090,7 @@ export default function Admin() {
             <p className="text-gray-400">Loading visitor history...</p>
           ) : visitors.length === 0 ? (
             <p className="rounded-lg border border-gray-800 bg-black/30 p-4 text-gray-400">
-              No visitor records found yet. Once someone submits the visitor
-              form, their record will appear here.
+              No visitor records found yet.
             </p>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-gray-800">
@@ -1038,7 +1104,6 @@ export default function Admin() {
                     <th className="px-4 py-3 text-center">Visits</th>
                   </tr>
                 </thead>
-
                 <tbody>
                   {visitors.map((visitor) => (
                     <tr
