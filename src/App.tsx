@@ -7,7 +7,6 @@ import {
   Menu,
   Search,
   ShieldCheck,
-  Sparkles,
   X,
   LockKeyhole,
   Phone,
